@@ -15,7 +15,10 @@ echo "alias run='npm run dev'" > .proj_aliases
 echo "alias test='npm test'" >> .proj_aliases
 
 cd ~/my-project
-# [project-aliases] Alias loaded from ~/my-project/.proj_aliases
+# [project-aliases] Warning: Untrusted .proj_aliases found. Run 'palias allow' to trust and load it.
+
+palias allow
+# [project-aliases] Loaded and trusted aliases for project: /Users/username/my-project
 
 run
 # Executes: npm run dev
@@ -28,16 +31,16 @@ cd ..
 
 ## ✨ Features
 - Define aliases per project in a `.proj_aliases` file.
-- Automatically **load aliases** when entering a project folder.
+- **🔒 Security-First**: Requires explicit trust (`palias allow`) before loading a `.proj_aliases` file. If the file is modified externally, the trust is invalidated, preventing silent execution of untrusted code.
+- Automatically **load aliases** when entering a trusted project folder.
 - Automatically **unload them** when leaving.
 - Keep a clean shell environment — no alias pollution between projects.
 - Helper commands:
-
-    - palias list → view currently active project aliases
-
-    - palias edit → edit currently project aliases
-
-    - palias reload → reload aliases for the current project without leaving the folder
+    - `palias list` → view currently active project aliases
+    - `palias edit` → edit currently project aliases
+    - `palias reload` → reload aliases for the current project without leaving the folder
+    - `palias allow` → trust and load aliases for the current project
+    - `palias deny` → untrust and unload aliases for the current project
 
 ---
 
@@ -87,20 +90,23 @@ alias down="docker-compose down"
 palias list    # Shows active project aliases
 palias edit    # Opens the current project's .proj_aliases in your editor
 palias reload  # Reload aliases from the current project's .proj_aliases
-
+palias allow   # Trust and load the current project's .proj_aliases
+palias deny    # Untrust and unload the current project's .proj_aliases
 ```
 
 ### Example session:
 ```bash
 cd ~/dev/my-api
-# [project-aliases] Alias loaded from ~/dev/my-api/.proj_aliases
+# [project-aliases] Warning: Untrusted .proj_aliases found. Run 'palias allow' to trust and load it.
+
+palias allow
+# [project-aliases] Loaded and trusted aliases for project: /Users/username/dev/my-api
 
 up      # runs docker-compose up -d
 down    # runs docker-compose down
 
-# If you modify .proj_aliases while inside the project
-palias reload
-# [project-aliases] Aliases reloaded from ~/dev/my-api/.proj_aliases
+# If you modify .proj_aliases, it becomes untrusted again. Re-run allow to load it:
+palias allow
 
 cd ..
 # [project-aliases] Project aliases removed

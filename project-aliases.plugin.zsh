@@ -23,6 +23,7 @@
 
 CURRENT_PROJECT=""
 PROJECT_ALIASES_LIST=()
+TRUST_DB="${XDG_CONFIG_HOME:-$HOME/.config}/project-aliases/trusted"
 
 # Find project root (contains .proj_aliases or .git)
 function find_project_root() {
@@ -43,6 +44,107 @@ function unset_project_aliases() {
         unalias "$alias_name" 2>/dev/null
     done
     PROJECT_ALIASES_LIST=()
+}
+
+# Calculate hash of a file portably
+function _project_aliases_hash() {
+    local file="$1"
+    if (( $+commands[shasum] )); then
+        shasum -a 256 "$file" 2>/dev/null | awk '{print $1}'
+    elif (( $+commands[sha256sum] )); then
+        sha256sum "$file" 2>/dev/null | awk '{print $1}'
+    elif (( $+commands[md5sum] )); then
+        md5sum "$file" 2>/dev/null | awk '{print $1}'
+    elif (( $+commands[md5] )); then
+        md5 -q "$file" 2>/dev/null
+    else
+        # Safe fallback if no hashing command exists (uses file modification time and size)
+        local stats
+        stats=$(stat -f "%m%z" "$file" 2>/dev/null || stat -c "%Y%s" "$file" 2>/dev/null || echo "00")
+        echo "legacy-$stats"
+    fi
+}
+
+# Check if a .proj_aliases file is trusted
+function check_project_aliases_trusted() {
+    local file="$1"
+    local abs_path
+    abs_path=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+    
+    if [[ ! -f "$TRUST_DB" ]]; then
+        return 1
+    fi
+    
+    local current_hash
+    current_hash=$(_project_aliases_hash "$file")
+    
+    local line
+    local found=1
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local entry_hash="${line%% *}"
+        local entry_path="${line#* }"
+        # Strip leading/trailing space
+        entry_path="${entry_path#${entry_path%%[![:space:]]*}}"
+        entry_path="${entry_path%${entry_path##*[![:space:]]}}"
+        
+        if [[ "$entry_hash" == "$current_hash" && "$entry_path" == "$abs_path" ]]; then
+            found=0
+            break
+        fi
+    done < "$TRUST_DB"
+    return $found
+}
+
+# Add current .proj_aliases to trusted database
+function allow_project_aliases() {
+    local file="$CURRENT_PROJECT/.proj_aliases"
+    local abs_path
+    abs_path=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+    
+    local current_hash
+    current_hash=$(_project_aliases_hash "$file")
+    
+    mkdir -p "$(dirname "$TRUST_DB")"
+    
+    if [[ -f "$TRUST_DB" ]]; then
+        local temp_db="${TRUST_DB}.tmp"
+        local line
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local entry_path="${line#* }"
+            entry_path="${entry_path#${entry_path%%[![:space:]]*}}"
+            entry_path="${entry_path%${entry_path##*[![:space:]]}}"
+            if [[ "$entry_path" != "$abs_path" ]]; then
+                echo "$line" >> "$temp_db"
+            fi
+        done < "$TRUST_DB"
+        mv "$temp_db" "$TRUST_DB" 2>/dev/null
+    fi
+    
+    echo "${current_hash} ${abs_path}" >> "$TRUST_DB"
+}
+
+# Remove current .proj_aliases from trusted database
+function deny_project_aliases() {
+    local file="$CURRENT_PROJECT/.proj_aliases"
+    local abs_path
+    abs_path=$(realpath "$file" 2>/dev/null || readlink -f "$file" 2>/dev/null || echo "$file")
+    
+    if [[ -f "$TRUST_DB" ]]; then
+        local temp_db="${TRUST_DB}.tmp"
+        local line
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local entry_path="${line#* }"
+            entry_path="${entry_path#${entry_path%%[![:space:]]*}}"
+            entry_path="${entry_path%${entry_path##*[![:space:]]}}"
+            if [[ "$entry_path" != "$abs_path" ]]; then
+                echo "$line" >> "$temp_db"
+            fi
+        done < "$TRUST_DB"
+        mv "$temp_db" "$TRUST_DB" 2>/dev/null
+    fi
 }
 
 # Load aliases from a file and store names
@@ -80,13 +182,17 @@ function load_project_aliases() {
         unset_project_aliases
         CURRENT_PROJECT="$root"
         if [[ -f "$root/.proj_aliases" ]]; then
-            load_project_aliases_file "$root/.proj_aliases"
-            echo "[project-aliases] Aliases loaded from $root/.proj_aliases"
+            if check_project_aliases_trusted "$root/.proj_aliases"; then
+                load_project_aliases_file "$root/.proj_aliases"
+                echo "[project-aliases] Aliases loaded from $root/.proj_aliases"
+            else
+                echo "[project-aliases] Warning: Untrusted .proj_aliases found. Run 'palias allow' to trust and load it."
+            fi
         fi
     fi
 }
 
-# Command to list, edit, or reload aliases
+# Command to list, edit, reload, allow, or deny aliases
 function palias() {
     case "$1" in
         list)
@@ -108,15 +214,38 @@ function palias() {
             ;;
         reload)
             if [[ -n "$CURRENT_PROJECT" && -f "$CURRENT_PROJECT/.proj_aliases" ]]; then
+                if check_project_aliases_trusted "$CURRENT_PROJECT/.proj_aliases"; then
+                    unset_project_aliases
+                    load_project_aliases_file "$CURRENT_PROJECT/.proj_aliases"
+                    echo "[project-aliases] Aliases reloaded from $CURRENT_PROJECT/.proj_aliases"
+                else
+                    echo "[project-aliases] Warning: .proj_aliases is not trusted. Run 'palias allow' to trust and load it."
+                fi
+            else
+                echo "[project-aliases] No active project or missing .proj_aliases file."
+            fi
+            ;;
+        allow)
+            if [[ -n "$CURRENT_PROJECT" && -f "$CURRENT_PROJECT/.proj_aliases" ]]; then
+                allow_project_aliases
                 unset_project_aliases
                 load_project_aliases_file "$CURRENT_PROJECT/.proj_aliases"
-                echo "[project-aliases] Aliases reloaded from $CURRENT_PROJECT/.proj_aliases"
+                echo "[project-aliases] Loaded and trusted aliases for project: $CURRENT_PROJECT"
+            else
+                echo "[project-aliases] No active project or missing .proj_aliases file."
+            fi
+            ;;
+        deny|disallow)
+            if [[ -n "$CURRENT_PROJECT" && -f "$CURRENT_PROJECT/.proj_aliases" ]]; then
+                deny_project_aliases
+                unset_project_aliases
+                echo "[project-aliases] Untrusted and unloaded aliases for project: $CURRENT_PROJECT"
             else
                 echo "[project-aliases] No active project or missing .proj_aliases file."
             fi
             ;;
         *)
-            echo "Usage: palias [list|edit|reload]"
+            echo "Usage: palias [list|edit|reload|allow|deny]"
             ;;
     esac
 }
